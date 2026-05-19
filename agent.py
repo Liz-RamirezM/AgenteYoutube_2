@@ -179,6 +179,23 @@ def looks_like_topic_moment_question(question: str) -> bool:
     ])
 
 
+def looks_like_upload_day_question(question: str) -> bool:
+    q = normalize_text(question)
+    return any(phrase in q for phrase in [
+        "que dia me recomiendas subir",
+        "que dia recomiendas subir",
+        "mejor dia para subir",
+        "dia conviene subir",
+        "cuando subir un video",
+        "que dia subir un video",
+    ])
+
+
+def looks_like_famous_opinion_question(question: str) -> bool:
+    q = normalize_text(question)
+    return bool(re.search(r"\b(opinaria|opinaría|diria|diría)\b", q))
+
+
 # =========================
 # 4. EMBEDDINGS DE PREGUNTA
 # =========================
@@ -392,6 +409,7 @@ class BigQueryYouTubeRetriever:
     def semantic_search_transcript_segments(
         self,
         query_embedding: list[float],
+        query_terms: Optional[list[str]] = None,
         filters: Optional[SearchFilters] = None,
         top_k: int = 40,
         min_score: float = MIN_SEMANTIC_SCORE,
@@ -402,6 +420,7 @@ class BigQueryYouTubeRetriever:
         params: list[bigquery.QueryParameter] = [
             bigquery.ScalarQueryParameter("channel_id", "STRING", CHANNEL_ID),
             bigquery.ArrayQueryParameter("query_embedding", "FLOAT64", query_embedding),
+            bigquery.ArrayQueryParameter("query_terms", "STRING", query_terms or []),
             bigquery.ScalarQueryParameter("top_k", "INT64", top_k),
             bigquery.ScalarQueryParameter("min_score", "FLOAT64", min_score),
         ]
@@ -456,6 +475,20 @@ class BigQueryYouTubeRetriever:
             estimated_end_seconds,
             estimated_start_mmss,
             estimated_end_mmss,
+            (
+              SELECT COUNT(1)
+              FROM UNNEST(@query_terms) AS term
+              WHERE term != ''
+                AND STRPOS(
+                  LOWER(CONCAT(
+                    IFNULL(titulo_video, ''), ' ',
+                    IFNULL(tema_legible, ''), ' ',
+                    IFNULL(descripcion_segmento, ''), ' ',
+                    IFNULL(segment_text, '')
+                  )),
+                  term
+                ) > 0
+            ) AS lexical_hits,
             SAFE_DIVIDE(
               (
                 SELECT SUM(q_value * e_value)
@@ -470,10 +503,23 @@ class BigQueryYouTubeRetriever:
           WHERE {" AND ".join(clauses)}
             AND ARRAY_LENGTH(embedding) = ARRAY_LENGTH(@query_embedding)
         )
-        SELECT *, score_semantico AS score_total
+        SELECT
+          *,
+          score_semantico
+            + LEAST(0.08, lexical_hits * 0.025)
+            + LEAST(0.06, LOG10(GREATEST(COALESCE(views, 0), 0) + 1) / 120) AS score_total
         FROM scored
         WHERE score_semantico >= @min_score
-        ORDER BY score_semantico DESC
+          AND (
+            ARRAY_LENGTH(@query_terms) = 0
+            OR lexical_hits > 0
+            OR (
+              ARRAY_LENGTH(@query_terms) > 2
+              AND score_semantico >= @min_score + 0.07
+            )
+            OR score_semantico >= @min_score + 0.15
+          )
+        ORDER BY score_total DESC, views DESC
         LIMIT @top_k
         """
         return self._query(sql, params)
@@ -609,6 +655,37 @@ class BigQueryYouTubeRetriever:
             bigquery.ScalarQueryParameter("limit", "INT64", limit),
         ])
 
+    def upload_day_performance(self) -> list[dict[str, Any]]:
+        sql = f"""
+        SELECT
+          dia_semana_publicacion,
+          COUNT(DISTINCT video_id) AS videos,
+          AVG(views) AS views_promedio,
+          AVG(likes) AS likes_promedio,
+          AVG(comentarios) AS comentarios_promedio,
+          AVG(engagement) AS engagement_promedio,
+          AVG(like_rate) AS like_rate_promedio,
+          AVG(views_por_dia) AS views_por_dia_promedio,
+          AVG(views_por_minuto) AS views_por_minuto_promedio,
+          SUM(views) AS views_totales,
+          SUM(likes) AS likes_totales,
+          SUM(comentarios) AS comentarios_totales,
+          ARRAY_AGG(
+            STRUCT(titulo_video, url_video, views, likes, comentarios, engagement)
+            ORDER BY views DESC
+            LIMIT 3
+          ) AS videos_destacados
+        FROM {QUOTED_TABLE_ID}
+        WHERE channel_id = @channel_id
+          AND dia_semana_publicacion IS NOT NULL
+        GROUP BY dia_semana_publicacion
+        HAVING videos >= 2
+        ORDER BY views_promedio DESC, engagement_promedio DESC, likes_promedio DESC
+        """
+        return self._query(sql, [
+            bigquery.ScalarQueryParameter("channel_id", "STRING", CHANNEL_ID)
+        ])
+
     def evaluate_ml_model(self) -> list[dict[str, Any]]:
         sql = f"SELECT * FROM ML.EVALUATE(MODEL {ML_MODEL_ID})"
         return self._query(sql)
@@ -727,7 +804,7 @@ def normalize_intent_plan(plan: Any) -> dict[str, Any]:
         "farewell", "channel_summary", "channel_opinion", "improvements",
         "famous_person_opinion", "topic_moments", "topic_analysis",
         "related_videos", "ranking", "ml_underperforming", "ml_overperforming",
-        "ml_evaluation", "out_of_scope", "fallback",
+        "ml_evaluation", "upload_day_recommendation", "out_of_scope", "fallback",
     }
     if normalized.get("intent") not in allowed_intents:
         normalized["intent"] = "fallback"
@@ -794,6 +871,7 @@ Intenciones permitidas:
 - ml_underperforming
 - ml_overperforming
 - ml_evaluation
+- upload_day_recommendation
 - out_of_scope
 - fallback
 
@@ -821,6 +899,8 @@ Reglas:
 - "temas con mejor interaccion" => topic_analysis con order_by = engagement.
 - "top videos por likes/views/engagement" => ranking.
 - "que mejorarias" => improvements.
+- "que dia me recomiendas subir un video" => upload_day_recommendation.
+- "que diria/opinaria X de mi/nuestro canal" => famous_person_opinion.
 - Si es externo al canal => out_of_scope.
 - Responde SOLO JSON.
 """
@@ -829,6 +909,10 @@ Reglas:
         plan["intent"] = "topic_moments"
         plan["topic"] = plan.get("topic") or extract_topic_from_question(question, compact_history(history))
         plan["has_transcript"] = True
+    if looks_like_upload_day_question(question):
+        plan["intent"] = "upload_day_recommendation"
+    if looks_like_famous_opinion_question(question):
+        plan["intent"] = "famous_person_opinion"
     if plan.get("intent") in {"topic_moments", "related_videos"} and not plan.get("topic"):
         plan["topic"] = extract_topic_from_question(question, compact_history(history))
     return normalize_intent_plan(plan)
@@ -855,15 +939,31 @@ def generate_final_answer(
 ) -> str:
     if response_mode == "moments":
         extra_rules = """
-- Responde breve y contundente.
-- Muestra maximo 5 resultados.
-- Para cada resultado incluye titulo, minuto aproximado, fragmento breve y URL.
+- Responde breve, ordenado y con humor ligero.
+- Muestra maximo 5 resultados numerados.
+- Ordena priorizando relevancia y alcance.
+- Para cada resultado incluye: titulo, minuto aproximado, fragmento breve, URL, views y likes.
 - Menciona views y likes solo como apoyo, sin analisis largo.
+- Di explicitamente que el minuto es aproximado.
 - No agregues recomendaciones si el usuario solo pregunto donde se hablo del tema.
+"""
+    elif response_mode == "opinion":
+        extra_rules = """
+- Puedes opinar de forma analitica y simpatico-comica usando las metricas del contexto.
+- Si mencionas a una persona famosa, aclara que es una simulacion de estilo, no una opinion real.
+- Da 3 observaciones y 2 recomendaciones concretas.
+- No seas acartonado; usa humor ligero, pero no conviertas la respuesta en chiste.
+"""
+    elif response_mode == "upload_day":
+        extra_rules = """
+- Recomienda un dia principal y un dia alternativo usando views, likes, comentarios, engagement y consistencia de muestra.
+- Explica brevemente el criterio.
+- Si hay pocos videos en un dia, menciona que la muestra es pequena.
+- Tono claro y con humor ligero.
 """
     else:
         extra_rules = """
-- Responde claro, breve y accionable.
+- Responde claro, breve, accionable y con humor ligero.
 - Si hay metricas, menciona solo las mas importantes.
 - Evita parrafos largos.
 """
@@ -968,8 +1068,9 @@ class RAGYouTubeAgent:
                 "metricas_generales": self.retriever.analytics_summary(),
                 "temas_mejor_interaccion": self.retriever.topic_performance(limit=5, order_by="engagement"),
                 "videos_destacados": self.retriever.ranked_videos(order_by="views", limit=5),
+                "videos_mejor_engagement": self.retriever.ranked_videos(order_by="engagement", limit=5),
             }
-            return generate_final_answer(question, context, history=history)
+            return generate_final_answer(question, context, history=history, response_mode="opinion")
 
         if intent == "improvements":
             context = {
@@ -1018,6 +1119,17 @@ class RAGYouTubeAgent:
             }
             return generate_final_answer(question, context, history=history)
 
+        if intent == "upload_day_recommendation":
+            context = {
+                "tipo": "recomendacion_dia_publicacion",
+                "criterio": (
+                    "Se agrupa por dia_semana_publicacion y se comparan views, likes, "
+                    "comentarios, engagement, views_por_dia y views_por_minuto."
+                ),
+                "resultados_por_dia": self.retriever.upload_day_performance(),
+            }
+            return generate_final_answer(question, context, history=history, response_mode="upload_day")
+
         if intent == "ranking":
             context = {
                 "tipo": "ranking_videos",
@@ -1064,6 +1176,7 @@ class RAGYouTubeAgent:
         query_embedding = embed_query_for_model(topic, embedding_model)
         results = self.retriever.semantic_search_transcript_segments(
             query_embedding=query_embedding,
+            query_terms=extract_search_terms(topic),
             filters=filters,
             top_k=40,
             min_score=MIN_SEMANTIC_SCORE,
