@@ -96,6 +96,73 @@ html, body, [class*="css"] {
 }
  
 #MainMenu, footer, header { display: none !important; }
+ 
+/* ── CHAT MESSAGES ── */
+[data-testid="stChatMessage"] {
+    background: #ffffff;
+    border: 1px solid #E0E0E0;
+    border-radius: 14px;
+    padding: 4px 8px;
+    margin-bottom: 8px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+}
+[data-testid="stChatMessageContent"] { color: #282828; }
+.stMarkdown p { color: #282828; }
+ 
+/* ── INPUT DE CHAT ── */
+[data-testid="stChatInput"] {
+    border: 1.5px solid #E0E0E0 !important;
+    border-radius: 30px !important;
+    background: #ffffff !important;
+    padding: 4px 8px !important;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06) !important;
+}
+[data-testid="stChatInput"]:focus-within {
+    border-color: #E8001C !important;
+    box-shadow: 0 2px 12px rgba(232,0,28,0.12) !important;
+}
+[data-testid="stChatInput"] textarea {
+    font-family: 'DM Sans', sans-serif !important;
+    font-size: 14px !important;
+    color: #282828 !important;
+}
+[data-testid="stChatInputSubmitButton"] button {
+    background: #E8001C !important;
+    border-radius: 50% !important;
+    border: none !important;
+    width: 36px !important;
+    height: 36px !important;
+}
+[data-testid="stChatInputSubmitButton"] button:hover {
+    background: #b8001a !important;
+}
+[data-testid="stChatInputSubmitButton"] svg {
+    fill: white !important;
+    color: white !important;
+}
+ 
+/* ── SIDEBAR BASE ── */
+section[data-testid="stSidebar"] {
+    background: #ffffff !important;
+    border-right: 1px solid #E0E0E0 !important;
+}
+section[data-testid="stSidebar"] > div:first-child {
+    padding: 0 !important;
+}
+/* Ocultar botones nativos visualmente pero mantener funcionalidad */
+section[data-testid="stSidebar"] div.stButton > button {
+    opacity: 0 !important;
+    position: absolute !important;
+    pointer-events: none !important;
+}
+ 
+/* ── INPUT FOOTER ── */
+.yt-input-footer {
+    text-align: center;
+    font-size: 11px;
+    color: #999999;
+    margin-top: 4px;
+}
 
 </style>
 """, unsafe_allow_html=True)
