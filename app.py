@@ -10,9 +10,10 @@ import streamlit as st
 # =========================
 
 st.set_page_config(
-    page_title="Agente YouTube Analytics",
-    page_icon=":bar_chart:",
-    layout="centered",
+    page_title="Las Damitas Histeria · Agente YouTube",
+    page_icon="▶️",
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
 
@@ -73,44 +74,28 @@ except Exception as exc:
 # 4. ESTILOS
 # =========================
 
-st.markdown(
-    """
-    <style>
-    .block-container {
-        padding-top: 2rem;
-        padding-bottom: 2rem;
-        max-width: 980px;
-    }
-
-    .main-title {
-        font-size: 2.1rem;
-        font-weight: 800;
-        line-height: 1.1;
-        margin-bottom: 0.35rem;
-    }
-
-    .subtitle {
-        font-size: 1rem;
-        color: #475569;
-        margin-bottom: 1.2rem;
-    }
-
-    .info-box {
-        background-color: #f8fafc;
-        padding: 1rem;
-        border-radius: 0.5rem;
-        border: 1px solid #e2e8f0;
-        margin-bottom: 1.2rem;
-    }
-
-    .small-text {
-        color: #64748b;
-        font-size: 0.9rem;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+st.markdown("""
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css">
+ 
+<style>
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&display=swap');
+ 
+/* ── BASE ── */
+html, body, [class*="css"] {
+    font-family: 'DM Sans', system-ui, sans-serif;
+}
+ 
+[data-testid="stAppViewContainer"] {
+    background: #F0F0F0;
+}
+ 
+.block-container {
+    padding-top: 1.5rem !important;
+    padding-bottom: 3rem !important;
+    max-width: 900px;
+}
+ 
+#MainMenu, footer, header { display: none !important; }
 
 
 # =========================
