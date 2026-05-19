@@ -160,6 +160,8 @@ def extract_topic_from_question(question: str, conversation_hint: str = "") -> s
         if match:
             topic = match.group(1).strip()
             topic = re.sub(r"\b(y en que minuto|minuto|video|videos|episodio|episodios|capitulo|capitulos)\b", " ", topic)
+            topic = re.sub(r"\bordenad[oa]s?\s+por\s+\w+(?:\s+por\s+\w+)?\b", " ", topic)
+            topic = re.sub(r"\bpor\s+(views|vistas|likes|comentarios|engagement|interaccion|interacción)\b", " ", topic)
             return re.sub(r"\s+", " ", topic).strip()
 
     if q in {"eso", "ese tema", "de eso", "sobre eso"} and conversation_hint:
@@ -194,6 +196,69 @@ def looks_like_upload_day_question(question: str) -> bool:
 def looks_like_famous_opinion_question(question: str) -> bool:
     q = normalize_text(question)
     return bool(re.search(r"\b(opinaria|opinaría|diria|diría)\b", q))
+
+
+def detect_order_by(question: str, default: str = "views") -> str:
+    q = normalize_text(question)
+    if "views por minuto" in q or "vistas por minuto" in q:
+        return "views_por_minuto"
+    if "engagement" in q or "interaccion" in q or "interacción" in q:
+        return "engagement"
+    if "likes" in q or "me gusta" in q:
+        return "likes"
+    if "comentarios" in q:
+        return "comentarios"
+    if "views por dia" in q or "vistas por dia" in q:
+        return "views_por_dia"
+    if "fecha" in q or "recientes" in q:
+        return "fecha"
+    if "views" in q or "vistas" in q:
+        return "views"
+    return default
+
+
+def detect_limit(question: str, default: int = 5) -> int:
+    match = re.search(r"\btop\s+(\d{1,2})\b", normalize_text(question))
+    if not match:
+        return default
+    return max(1, min(int(match.group(1)), 10))
+
+
+def detect_duration_type(question: str) -> Optional[str]:
+    q = normalize_text(question)
+    if "corto" in q or "short" in q or "shorts" in q:
+        return "corto"
+    if "largo" in q or "podcast" in q:
+        return "largo"
+    return None
+
+
+def extract_person_for_opinion(question: str) -> Optional[str]:
+    q = question.strip()
+    patterns = [
+        r"que\s+(?:diria|diría|opinaria|opinaría)\s+(.+?)\s+(?:de|sobre)\s+(?:mi|nuestro)\s+canal",
+        r"(?:diria|diría|opinaria|opinaría)\s+(.+?)\s+(?:de|sobre)\s+(?:mi|nuestro)\s+canal",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, q, re.IGNORECASE)
+        if match:
+            return match.group(1).strip(" ?¿!¡.")
+    return None
+
+
+def sort_rows_for_growth(rows: list[dict[str, Any]], order_by: str = "views") -> list[dict[str, Any]]:
+    metric = ALLOWED_ORDER_COLUMNS.get(order_by, "views")
+    if metric == "fecha_publicacion":
+        return sorted(rows, key=lambda row: str(row.get(metric) or ""), reverse=True)
+    return sorted(
+        rows,
+        key=lambda row: (
+            float(row.get(metric) or 0),
+            float(row.get("views") or 0),
+            float(row.get("engagement") or 0),
+        ),
+        reverse=True,
+    )
 
 
 # =========================
@@ -804,7 +869,7 @@ def normalize_intent_plan(plan: Any) -> dict[str, Any]:
         "farewell", "channel_summary", "channel_opinion", "improvements",
         "famous_person_opinion", "topic_moments", "topic_analysis",
         "related_videos", "ranking", "ml_underperforming", "ml_overperforming",
-        "ml_evaluation", "upload_day_recommendation", "out_of_scope", "fallback",
+        "ml_evaluation", "ml_explanation", "upload_day_recommendation", "out_of_scope", "fallback",
     }
     if normalized.get("intent") not in allowed_intents:
         normalized["intent"] = "fallback"
@@ -871,6 +936,7 @@ Intenciones permitidas:
 - ml_underperforming
 - ml_overperforming
 - ml_evaluation
+- ml_explanation
 - upload_day_recommendation
 - out_of_scope
 - fallback
@@ -898,6 +964,9 @@ Reglas:
 - "temas mas hablados" => topic_analysis con order_by = videos.
 - "temas con mejor interaccion" => topic_analysis con order_by = engagement.
 - "top videos por likes/views/engagement" => ranking.
+- "top 10 videos cortos por views por minuto" => ranking, order_by = views_por_minuto, duration_type = corto, limit = 10.
+- "videos que superaron la prediccion/modelo" => ml_overperforming.
+- "usamos un modelo ML" o "en que parte usamos ML" => ml_explanation.
 - "que mejorarias" => improvements.
 - "que dia me recomiendas subir un video" => upload_day_recommendation.
 - "que diria/opinaria X de mi/nuestro canal" => famous_person_opinion.
@@ -909,10 +978,31 @@ Reglas:
         plan["intent"] = "topic_moments"
         plan["topic"] = plan.get("topic") or extract_topic_from_question(question, compact_history(history))
         plan["has_transcript"] = True
+    q = normalize_text(question)
+    if "videos relacionados" in q:
+        plan["intent"] = "related_videos"
+        plan["topic"] = extract_topic_from_question(question, compact_history(history))
+        plan["order_by"] = detect_order_by(question, default="views")
+    if "temas mas hablados" in q or "temas mas mencionados" in q:
+        plan["intent"] = "topic_analysis"
+    if "mejor interaccion" in q and "tema" in q:
+        plan["intent"] = "topic_analysis"
+    if "top" in q and ("video" in q or "videos" in q):
+        plan["intent"] = "ranking"
+        plan["order_by"] = detect_order_by(question, default="views")
+        plan["limit"] = detect_limit(question, default=10)
+        duration_type = detect_duration_type(question)
+        if duration_type:
+            plan["duration_type"] = duration_type
+    if "superaron" in q and ("prediccion" in q or "modelo" in q):
+        plan["intent"] = "ml_overperforming"
+    if ("modelo ml" in q or "usamos ml" in q or "usamos un modelo" in q or "en que parte" in q) and "modelo" in q:
+        plan["intent"] = "ml_explanation"
     if looks_like_upload_day_question(question):
         plan["intent"] = "upload_day_recommendation"
     if looks_like_famous_opinion_question(question):
         plan["intent"] = "famous_person_opinion"
+        plan["person"] = plan.get("person") or extract_person_for_opinion(question)
     if plan.get("intent") in {"topic_moments", "related_videos"} and not plan.get("topic"):
         plan["topic"] = extract_topic_from_question(question, compact_history(history))
     return normalize_intent_plan(plan)
@@ -954,12 +1044,34 @@ def generate_final_answer(
 - Da 3 observaciones y 2 recomendaciones concretas.
 - No seas acartonado; usa humor ligero, pero no conviertas la respuesta en chiste.
 """
+    elif response_mode == "sarcastic_opinion":
+        extra_rules = """
+- Responde como una simulacion sarcastica estilo creador obsesionado con retencion, miniaturas, ritmo y alcance.
+- Aclara que NO es una opinion real de la persona famosa.
+- Usa sarcasmo ligero y util, no seas agresivo.
+- Da 3 observaciones filosas basadas en metricas y 3 acciones para crecer alcance.
+- Prioriza views, engagement, views por minuto, formatos y temas que ya probaron traccion.
+"""
     elif response_mode == "upload_day":
         extra_rules = """
 - Recomienda un dia principal y un dia alternativo usando views, likes, comentarios, engagement y consistencia de muestra.
 - Explica brevemente el criterio.
 - Si hay pocos videos en un dia, menciona que la muestra es pequena.
 - Tono claro y con humor ligero.
+"""
+    elif response_mode == "growth_rank":
+        extra_rules = """
+- Responde como estratega de crecimiento de YouTube: claro, amigable y amante de subir el alcance.
+- Siempre explica el criterio de orden: la metrica pedida primero y views/engagement como desempate.
+- Presenta rankings numerados y ordenados, no listas aleatorias.
+- Para cada video o tema incluye la metrica principal y una lectura accionable.
+- Cierra con una recomendacion breve para crecer alcance.
+"""
+    elif response_mode == "ml":
+        extra_rules = """
+- Explica de forma simple si se usa ML y en que parte del agente.
+- Si hay resultados de prediccion, ordenalos por diferencia predicha y explica que significa.
+- Tono claro, ligeramente comico y enfocado en mejorar alcance.
 """
     else:
         extra_rules = """
@@ -977,6 +1089,7 @@ Reglas obligatorias:
 - Si el minuto es aproximado, dilo claramente.
 - Si no hay informacion suficiente, dilo.
 - No respondas temas fuera del canal.
+- Tu objetivo es ayudar a crecer el alcance del canal: prioriza claridad, impacto, retencion, views y engagement.
 {extra_rules}
 
 Historial reciente:
@@ -1061,16 +1174,19 @@ class RAGYouTubeAgent:
             return generate_final_answer(question, context, history=history)
 
         if intent in {"channel_opinion", "famous_person_opinion"}:
+            person = plan.get("person")
+            response_mode = "sarcastic_opinion" if person and "mrbeast" in normalize_text(person) else "opinion"
             context = {
-                "persona": plan.get("person"),
+                "persona": person,
                 "nota": "Si se menciona una persona famosa, es una simulacion analitica, no una opinion real.",
                 "perfil_canal": self.retriever.channel_profile(),
                 "metricas_generales": self.retriever.analytics_summary(),
                 "temas_mejor_interaccion": self.retriever.topic_performance(limit=5, order_by="engagement"),
                 "videos_destacados": self.retriever.ranked_videos(order_by="views", limit=5),
                 "videos_mejor_engagement": self.retriever.ranked_videos(order_by="engagement", limit=5),
+                "videos_mayor_views_por_minuto": self.retriever.ranked_videos(order_by="views_por_minuto", limit=5),
             }
-            return generate_final_answer(question, context, history=history, response_mode="opinion")
+            return generate_final_answer(question, context, history=history, response_mode=response_mode)
 
         if intent == "improvements":
             context = {
@@ -1101,23 +1217,31 @@ class RAGYouTubeAgent:
             return generate_final_answer(question, context, history=history, response_mode="moments")
 
         if intent == "related_videos":
-            semantic = self._semantic_topic_moments(topic, filters=filters, limit=limit)
+            semantic = sort_rows_for_growth(
+                self._semantic_topic_moments(topic, filters=filters, limit=max(limit, 10)),
+                order_by=order_by,
+            )[:limit]
             lexical = self.retriever.search_videos(topic, filters=filters, order_by=order_by, limit=limit)
             context = {
                 "tipo": "videos_relacionados_hibridos",
                 "tema": topic,
-                "resultados_semanticos_por_segmento": semantic,
+                "criterio_orden": (
+                    f"Primero se filtra por relacion semantica con '{topic}'. "
+                    f"Despues se ordena por {order_by}, usando views y engagement como desempate."
+                ),
+                "resultados": semantic or lexical,
                 "resultados_lexicos_bigquery": lexical,
             }
-            return generate_final_answer(question, context, history=history)
+            return generate_final_answer(question, context, history=history, response_mode="growth_rank")
 
         if intent == "topic_analysis":
             context = {
+                "criterio": "Comparar volumen de temas vs calidad de interaccion para encontrar donde conviene insistir.",
                 "temas_mas_hablados": self.retriever.topic_performance(limit=limit, order_by="videos"),
                 "temas_mejor_interaccion": self.retriever.topic_performance(limit=limit, order_by="engagement"),
                 "temas_mas_views": self.retriever.topic_performance(limit=limit, order_by="views"),
             }
-            return generate_final_answer(question, context, history=history)
+            return generate_final_answer(question, context, history=history, response_mode="growth_rank")
 
         if intent == "upload_day_recommendation":
             context = {
@@ -1134,28 +1258,48 @@ class RAGYouTubeAgent:
             context = {
                 "tipo": "ranking_videos",
                 "orden": order_by,
+                "criterio_orden": (
+                    f"Ranking ordenado por {order_by}; si hay empate, se mira alcance total e interaccion."
+                ),
                 "filtros": filters,
                 "resultados": self.retriever.ranked_videos(filters=filters, order_by=order_by, limit=limit),
             }
-            return generate_final_answer(question, context, history=history)
+            return generate_final_answer(question, context, history=history, response_mode="growth_rank")
 
         if intent == "ml_underperforming":
             context = {
                 "tipo": "videos_por_debajo_de_lo_esperado",
+                "modelo_ml": ML_MODEL_ID,
+                "explicacion": "El agente usa BigQuery ML en ML.PREDICT para comparar views reales contra views predichas.",
                 "resultados": self.retriever.predict_video_performance(limit=limit, order="underperforming"),
             }
-            return generate_final_answer(question, context, history=history)
+            return generate_final_answer(question, context, history=history, response_mode="ml")
 
         if intent == "ml_overperforming":
             context = {
                 "tipo": "videos_que_superaron_prediccion",
+                "modelo_ml": ML_MODEL_ID,
+                "explicacion": "Diferencia positiva significa que el video tuvo mas views reales que las views predichas por el modelo.",
                 "resultados": self.retriever.predict_video_performance(limit=limit, order="overperforming"),
             }
-            return generate_final_answer(question, context, history=history)
+            return generate_final_answer(question, context, history=history, response_mode="ml")
 
         if intent == "ml_evaluation":
             context = {"tipo": "evaluacion_modelo_ml", "resultados": self.retriever.evaluate_ml_model()}
-            return generate_final_answer(question, context, history=history)
+            return generate_final_answer(question, context, history=history, response_mode="ml")
+
+        if intent == "ml_explanation":
+            context = {
+                "tipo": "explicacion_modelo_ml",
+                "respuesta_corta": "Si, el agente usa un modelo de BigQuery ML para prediccion de rendimiento.",
+                "modelo_ml": ML_MODEL_ID,
+                "donde_se_usa": [
+                    "predict_video_performance(): consulta ML.PREDICT para comparar views reales vs predicted_views.",
+                    "evaluate_ml_model(): consulta ML.EVALUATE para revisar metricas del modelo.",
+                    "Las respuestas ml_underperforming y ml_overperforming usan esa comparacion para detectar videos que rindieron peor o mejor de lo esperado.",
+                ],
+            }
+            return generate_final_answer(question, context, history=history, response_mode="ml")
 
         semantic = self._semantic_topic_moments(topic or question, filters=filters, limit=5)
         context = {
