@@ -696,29 +696,54 @@ class BigQueryYouTubeRetriever:
             "like_rate": "like_rate_promedio DESC",
             "views_por_dia": "views_por_dia_promedio DESC",
         }
-        sql = f"""
-        SELECT
-          tema_legible,
-          COUNT(DISTINCT video_id) AS videos,
-          SUM(views) AS views_totales,
-          SUM(likes) AS likes_totales,
-          SUM(comentarios) AS comentarios_totales,
-          AVG(engagement) AS engagement_promedio,
-          AVG(like_rate) AS like_rate_promedio,
-          AVG(views_por_dia) AS views_por_dia_promedio,
-          AVG(views_por_minuto) AS views_por_minuto_promedio
-        FROM {QUOTED_TABLE_ID}
-        WHERE channel_id = @channel_id
-          AND tema_legible IS NOT NULL
-          AND TRIM(tema_legible) != ''
-        GROUP BY tema_legible
-        ORDER BY {order_map.get(order_by, "videos DESC")}
-        LIMIT @limit
-        """
-        return self._query(sql, [
-            bigquery.ScalarQueryParameter("channel_id", "STRING", CHANNEL_ID),
-            bigquery.ScalarQueryParameter("limit", "INT64", limit),
-        ])
+        order_sql = "diferencia_predicha ASC" if order == "underperforming" else "diferencia_predicha DESC"
+
+sql = f"""
+SELECT
+predicted_views,
+titulo_video,
+views AS views_reales,
+views - predicted_views AS diferencia_predicha,
+likes,
+comentarios,
+engagement,
+like_rate,
+tema_legible,
+formato_video
+FROM ML.PREDICT(
+MODEL {ML_MODEL_ID},
+(
+SELECT
+titulo_video,
+views,
+duracion_minutos,
+edad_video_dias,
+anio_publicacion,
+mes_publicacion,
+dia_publicacion,
+dia_semana_publicacion,
+tipo_duracion,
+formato_video,
+tema_legible,
+tiene_transcripcion_valida,
+tiene_descripcion,
+likes,
+comentarios,
+engagement,
+like_rate
+FROM {QUOTED_TABLE_ID}
+WHERE channel_id = @channel_id
+)
+)
+ORDER BY {order_sql}
+LIMIT @limit
+"""
+
+return self._query(sql, [
+bigquery.ScalarQueryParameter("channel_id", "STRING", CHANNEL_ID),
+bigquery.ScalarQueryParameter("limit", "INT64", limit),
+])
+
 
     def upload_day_performance(self) -> list[dict[str, Any]]:
         sql = f"""
@@ -774,24 +799,46 @@ class BigQueryYouTubeRetriever:
           MODEL {ML_MODEL_ID},
           (
             SELECT
-              titulo_video,
-              views,
-              duracion_minutos,
-              edad_video_dias,
-              anio_publicacion,
-              mes_publicacion,
-              dia_publicacion,
-              dia_semana_publicacion,
-              tipo_duracion,
-              formato_video,
-              tema_legible,
-              tiene_transcripcion_valida,
-              tiene_descripcion,
-              likes,
-              comentarios,
-              engagement,
-              like_rate,
-              url_video
+predicted_views,
+titulo_video,
+views AS views_reales,
+views - predicted_views AS diferencia_predicha,
+likes,
+comentarios,
+engagement,
+like_rate,
+tema_legible,
+formato_video,
+url_video
+FROM ML.PREDICT(
+MODEL {ML_MODEL_ID},
+(
+SELECT
+titulo_video,
+views,
+duracion_minutos,
+edad_video_dias,
+anio_publicacion,
+mes_publicacion,
+dia_publicacion,
+dia_semana_publicacion,
+tipo_duracion,
+formato_video,
+tema_legible,
+tiene_transcripcion_valida,
+tiene_descripcion,
+likes,
+comentarios,
+engagement,
+like_rate
+FROM {QUOTED_TABLE_ID}
+WHERE channel_id = @channel_id
+)
+)
+ORDER BY {order_sql}
+LIMIT @limit
+"""
+
             FROM {QUOTED_TABLE_ID}
             WHERE channel_id = @channel_id
           )
