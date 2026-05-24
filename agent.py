@@ -59,7 +59,7 @@ LOCAL_EMBEDDING_MODEL = _secret_or_env("LOCAL_EMBEDDING_MODEL", "")
 OPENROUTER_API_KEY = _secret_or_env("OPENROUTER_API_KEY", "")
 OPENROUTER_MODEL = _secret_or_env("OPENROUTER_MODEL", "google/gemini-2.5-flash-lite")
 OPENROUTER_SITE_URL = _secret_or_env("OPENROUTER_SITE_URL", "")
-OPENROUTER_APP_NAME = _secret_or_env("OPENROUTER_APP_NAME", "youtube-agent")
+OPENROUTER_APP_NAME = _secret_or_env("OPENROUTER_APP_NAME", "prueba")
 
 MIN_SEMANTIC_SCORE = float(_secret_or_env("MIN_SEMANTIC_SCORE", "0.18") or 0.18)
 MAX_CONTEXT_CHARS = int(_secret_or_env("MAX_CONTEXT_CHARS", "12000") or 12000)
